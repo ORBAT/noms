@@ -37,7 +37,11 @@ var commands = []*util.Command{
 
 var kingpinCommands = []util.KingpinCommand{
 	nomsBlob,
+	nomsList,
+	nomsMap,
+	nomsSet,
 	nomsStats,
+	nomsStruct,
 	splore.Cmd,
 }
 

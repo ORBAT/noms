@@ -11,10 +11,8 @@ import (
 	"path"
 	"testing"
 
-	"github.com/attic-labs/noms/go/d"
-
 	"github.com/attic-labs/noms/go/chunks"
-
+	"github.com/attic-labs/noms/go/d"
 	"github.com/attic-labs/noms/go/datas"
 	"github.com/attic-labs/noms/go/nbs"
 	"github.com/attic-labs/noms/go/types"
