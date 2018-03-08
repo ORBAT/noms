@@ -2,6 +2,7 @@ package ipfs
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io/ioutil"
 	"math"
@@ -12,15 +13,17 @@ import (
 	"sync"
 	"time"
 
-	cid "gx/ipfs/QmNp85zy9RLrQ5oQD4hPyS39ezrrXpcaa7R4Y9kxdWQLLQ/go-cid"
-	blocks "gx/ipfs/QmSn9Td7xgxm9EV7iEjTckpUWmWApggzPxu7eFGWkkpwin/go-block-format"
-	mh "gx/ipfs/QmU9a9NV9RdPNwZQDYd5uKsm6N6LJLSvLbywDDYFbaaC6P/go-multihash"
+	mh "gx/ipfs/QmZyZDi491cCNTLfAhwcaDii2Kg4pwKRkhqQzURGDvY6ua/go-multihash"
+	"gx/ipfs/QmcZfnkapfECQGcLZaf9B79NRg7cRa9EnZh4LSbkCzwNvY/go-cid"
+	"gx/ipfs/Qmej7nf81hi2x2tvjRBF3mcp74sQyuDH4VMYDGd1YtXjb2/go-block-format"
 
 	"github.com/attic-labs/noms/go/chunks"
 	"github.com/attic-labs/noms/go/d"
+	"github.com/attic-labs/noms/go/datas"
 	"github.com/attic-labs/noms/go/hash"
+	"github.com/attic-labs/noms/go/spec"
 	"github.com/attic-labs/noms/samples/go/decent/dbg"
-	"github.com/ipfs/go-ipfs/blocks/blockstore"
+	"github.com/ipfs/go-ipfs-blockstore"
 	"github.com/ipfs/go-ipfs/core"
 	"github.com/ipfs/go-ipfs/repo"
 	"github.com/ipfs/go-ipfs/repo/config"
@@ -41,9 +44,7 @@ import (
 // currently too slow to be practical.
 //
 // This function creates an IPFS repo at the appropriate path if one doesn't
-// already exist. If the global NodeIndex variable has been set to a number
-// between 0 and 9 inclusive, the api, http, and swarm ports will be modified to
-// end in with that digit. (e.g. if NodeIndex == 3, API port will be set to 5003)
+// already exist.
 //
 // If local is true, only the local IPFS blockstore is used for both reads and
 // write. If local is false, then reads will fall through to the network and
@@ -226,9 +227,9 @@ func (cs *chunkStore) Put(c chunks.Chunk) {
 		err = cs.node.Blockstore.Put(b)
 		d.PanicIfError(err)
 	} else {
-		cid2, err := cs.node.Blocks.AddBlock(b)
+		err := cs.node.Blocks.AddBlock(b)
 		d.PanicIfError(err)
-		d.PanicIfFalse(reflect.DeepEqual(cid, cid2))
+		d.PanicIfFalse(reflect.DeepEqual(cid, b.Cid()))
 	}
 }
 
@@ -335,4 +336,28 @@ func resetRepoConfigPorts(r repo.Repo, nodeIdx int) {
 	}
 	err = r.SetConfig(rc)
 	d.CheckError(err)
+}
+
+// ipfsProtocol implements spec.ProtocolImpl for ipfs and ipfs-local. If the bool is true, then the ChunkStore will be
+// local. See NewChunkStore
+type ipfsProtocol = bool
+
+// NewChunkStore returns a new
+func (i ipfsProtocol) NewChunkStore(sp spec.Spec) (chunks.ChunkStore, error) {
+	if sp.DatabaseName == "" {
+		return nil, errors.New("no database in spec")
+	}
+	return NewChunkStore(sp.DatabaseName, i), nil
+}
+
+func (i ipfsProtocol) NewDatabase(sp spec.Spec) (datas.Database, error) {
+	if sp.DatabaseName == "" {
+		return nil, errors.New("no database in spec")
+	}
+	return datas.NewDatabase(NewChunkStore(sp.DatabaseName, i)), nil
+}
+
+func init() {
+	spec.ExternalProtocols["ipfs"] = ipfsProtocol(false)
+	spec.ExternalProtocols["ipfs-local"] = ipfsProtocol(true)
 }
