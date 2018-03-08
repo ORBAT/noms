@@ -7,7 +7,6 @@ import (
 	"strings"
 
 	path "github.com/ipfs/go-ipfs/path"
-
 	isd "gx/ipfs/QmZmmuAXgX73UQmX1jRKjTGmjzq24Jinqkq8vzkBtno4uX/go-is-domain"
 )
 
@@ -56,7 +55,7 @@ func (r *DNSResolver) resolveOnce(ctx context.Context, name string) (path.Path, 
 	if !isd.IsDomain(domain) {
 		return "", errors.New("not a valid domain name")
 	}
-	log.Infof("DNSResolver resolving %s", domain)
+	log.Debugf("DNSResolver resolving %s", domain)
 
 	rootChan := make(chan lookupRes, 1)
 	go workDomain(r, domain, rootChan)

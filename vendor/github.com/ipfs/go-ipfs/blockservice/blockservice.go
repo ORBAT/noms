@@ -7,32 +7,59 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 
-	"github.com/ipfs/go-ipfs/blocks/blockstore"
 	exchange "github.com/ipfs/go-ipfs/exchange"
-	bitswap "github.com/ipfs/go-ipfs/exchange/bitswap"
+	"github.com/ipfs/go-ipfs/thirdparty/verifcid"
 
-	cid "gx/ipfs/QmNp85zy9RLrQ5oQD4hPyS39ezrrXpcaa7R4Y9kxdWQLLQ/go-cid"
-	blocks "gx/ipfs/QmSn9Td7xgxm9EV7iEjTckpUWmWApggzPxu7eFGWkkpwin/go-block-format"
-	logging "gx/ipfs/QmSpJByNKFX1sCsHBEp3R73FL4NF6FnQTEGyNAXHm2GS52/go-log"
+	logging "gx/ipfs/QmRb5jh8z2E8hMGN2tkvs1yHynUanqnZ3UeKwgN1i9P1F8/go-log"
+	blockstore "gx/ipfs/QmTVDM4LCSUMFNQzbDLL9zQwp8usE6QHymFdh3h8vL9v6b/go-ipfs-blockstore"
+	cid "gx/ipfs/QmcZfnkapfECQGcLZaf9B79NRg7cRa9EnZh4LSbkCzwNvY/go-cid"
+	blocks "gx/ipfs/Qmej7nf81hi2x2tvjRBF3mcp74sQyuDH4VMYDGd1YtXjb2/go-block-format"
 )
 
 var log = logging.Logger("blockservice")
 
 var ErrNotFound = errors.New("blockservice: key not found")
 
+// BlockGetter is the common interface shared between blockservice sessions and
+// the blockservice.
+type BlockGetter interface {
+	// GetBlock gets the requested block.
+	GetBlock(ctx context.Context, c *cid.Cid) (blocks.Block, error)
+
+	// GetBlocks does a batch request for the given cids, returning blocks as
+	// they are found, in no particular order.
+	//
+	// It may not be able to find all requested blocks (or the context may
+	// be canceled). In that case, it will close the channel early. It is up
+	// to the consumer to detect this situation and keep track which blocks
+	// it has received and which it hasn't.
+	GetBlocks(ctx context.Context, ks []*cid.Cid) <-chan blocks.Block
+}
+
 // BlockService is a hybrid block datastore. It stores data in a local
 // datastore and may retrieve data from a remote Exchange.
 // It uses an internal `datastore.Datastore` instance to store values.
 type BlockService interface {
+	io.Closer
+	BlockGetter
+
+	// Blockstore returns a reference to the underlying blockstore
 	Blockstore() blockstore.Blockstore
+
+	// Exchange returns a reference to the underlying exchange (usually bitswap)
 	Exchange() exchange.Interface
-	AddBlock(o blocks.Block) (*cid.Cid, error)
-	AddBlocks(bs []blocks.Block) ([]*cid.Cid, error)
-	GetBlock(ctx context.Context, c *cid.Cid) (blocks.Block, error)
-	GetBlocks(ctx context.Context, ks []*cid.Cid) <-chan blocks.Block
-	DeleteBlock(o blocks.Block) error
-	Close() error
+
+	// AddBlock puts a given block to the underlying datastore
+	AddBlock(o blocks.Block) error
+
+	// AddBlocks adds a slice of blocks at the same time using batching
+	// capabilities of the underlying datastore whenever possible.
+	AddBlocks(bs []blocks.Block) error
+
+	// DeleteBlock deletes the given block from the blockservice.
+	DeleteBlock(o *cid.Cid) error
 }
 
 type blockService struct {
@@ -70,65 +97,78 @@ func NewWriteThrough(bs blockstore.Blockstore, rem exchange.Interface) BlockServ
 	}
 }
 
-func (bs *blockService) Blockstore() blockstore.Blockstore {
-	return bs.blockstore
+// Blockstore returns the blockstore behind this blockservice.
+func (s *blockService) Blockstore() blockstore.Blockstore {
+	return s.blockstore
 }
 
-func (bs *blockService) Exchange() exchange.Interface {
-	return bs.exchange
+// Exchange returns the exchange behind this blockservice.
+func (s *blockService) Exchange() exchange.Interface {
+	return s.exchange
 }
 
-// NewSession creates a bitswap session that allows for controlled exchange of
-// wantlists to decrease the bandwidth overhead.
+// NewSession creates a new session that allows for
+// controlled exchange of wantlists to decrease the bandwidth overhead.
+// If the current exchange is a SessionExchange, a new exchange
+// session will be created. Otherwise, the current exchange will be used
+// directly.
 func NewSession(ctx context.Context, bs BlockService) *Session {
-	exchange := bs.Exchange()
-	if bswap, ok := exchange.(*bitswap.Bitswap); ok {
-		ses := bswap.NewSession(ctx)
+	exch := bs.Exchange()
+	if sessEx, ok := exch.(exchange.SessionExchange); ok {
+		ses := sessEx.NewSession(ctx)
 		return &Session{
 			ses: ses,
 			bs:  bs.Blockstore(),
 		}
 	}
 	return &Session{
-		ses: exchange,
+		ses: exch,
 		bs:  bs.Blockstore(),
 	}
 }
 
 // AddBlock adds a particular block to the service, Putting it into the datastore.
 // TODO pass a context into this if the remote.HasBlock is going to remain here.
-func (s *blockService) AddBlock(o blocks.Block) (*cid.Cid, error) {
+func (s *blockService) AddBlock(o blocks.Block) error {
 	c := o.Cid()
+	// hash security
+	err := verifcid.ValidateCid(c)
+	if err != nil {
+		return err
+	}
 	if s.checkFirst {
-		has, err := s.blockstore.Has(c)
-		if err != nil {
-			return nil, err
-		}
-
-		if has {
-			return c, nil
+		if has, err := s.blockstore.Has(c); has || err != nil {
+			return err
 		}
 	}
 
-	err := s.blockstore.Put(o)
-	if err != nil {
-		return nil, err
+	if err := s.blockstore.Put(o); err != nil {
+		return err
 	}
 
 	if err := s.exchange.HasBlock(o); err != nil {
-		return nil, errors.New("blockservice is closed")
+		// TODO(#4623): really an error?
+		return errors.New("blockservice is closed")
 	}
 
-	return c, nil
+	return nil
 }
 
-func (s *blockService) AddBlocks(bs []blocks.Block) ([]*cid.Cid, error) {
+func (s *blockService) AddBlocks(bs []blocks.Block) error {
+	// hash security
+	for _, b := range bs {
+		err := verifcid.ValidateCid(b.Cid())
+		if err != nil {
+			return err
+		}
+	}
 	var toput []blocks.Block
 	if s.checkFirst {
+		toput = make([]blocks.Block, 0, len(bs))
 		for _, b := range bs {
 			has, err := s.blockstore.Has(b.Cid())
 			if err != nil {
-				return nil, err
+				return err
 			}
 			if !has {
 				toput = append(toput, b)
@@ -140,18 +180,16 @@ func (s *blockService) AddBlocks(bs []blocks.Block) ([]*cid.Cid, error) {
 
 	err := s.blockstore.PutMany(toput)
 	if err != nil {
-		return nil, err
+		return err
 	}
 
-	var ks []*cid.Cid
 	for _, o := range toput {
 		if err := s.exchange.HasBlock(o); err != nil {
-			return nil, fmt.Errorf("blockservice is closed (%s)", err)
+			// TODO(#4623): Should this really *return*?
+			return fmt.Errorf("blockservice is closed (%s)", err)
 		}
-
-		ks = append(ks, o.Cid())
 	}
-	return ks, nil
+	return nil
 }
 
 // GetBlock retrieves a particular block from the service,
@@ -164,10 +202,15 @@ func (s *blockService) GetBlock(ctx context.Context, c *cid.Cid) (blocks.Block, 
 		f = s.exchange
 	}
 
-	return getBlock(ctx, c, s.blockstore, f)
+	return getBlock(ctx, c, s.blockstore, f) // hash security
 }
 
 func getBlock(ctx context.Context, c *cid.Cid, bs blockstore.Blockstore, f exchange.Fetcher) (blocks.Block, error) {
+	err := verifcid.ValidateCid(c) // hash security
+	if err != nil {
+		return nil, err
+	}
+
 	block, err := bs.Get(c)
 	if err == nil {
 		return block, nil
@@ -199,11 +242,18 @@ func getBlock(ctx context.Context, c *cid.Cid, bs blockstore.Blockstore, f excha
 // the returned channel.
 // NB: No guarantees are made about order.
 func (s *blockService) GetBlocks(ctx context.Context, ks []*cid.Cid) <-chan blocks.Block {
-	return getBlocks(ctx, ks, s.blockstore, s.exchange)
+	return getBlocks(ctx, ks, s.blockstore, s.exchange) // hash security
 }
 
 func getBlocks(ctx context.Context, ks []*cid.Cid, bs blockstore.Blockstore, f exchange.Fetcher) <-chan blocks.Block {
 	out := make(chan blocks.Block)
+	for _, c := range ks {
+		// hash security
+		if err := verifcid.ValidateCid(c); err != nil {
+			log.Errorf("unsafe CID (%s) passed to blockService.GetBlocks: %s", c, err)
+		}
+	}
+
 	go func() {
 		defer close(out)
 		var misses []*cid.Cid
@@ -243,8 +293,8 @@ func getBlocks(ctx context.Context, ks []*cid.Cid, bs blockstore.Blockstore, f e
 }
 
 // DeleteBlock deletes a block in the blockservice from the datastore
-func (s *blockService) DeleteBlock(o blocks.Block) error {
-	return s.blockstore.DeleteBlock(o.Cid())
+func (s *blockService) DeleteBlock(c *cid.Cid) error {
+	return s.blockstore.DeleteBlock(c)
 }
 
 func (s *blockService) Close() error {
@@ -260,10 +310,12 @@ type Session struct {
 
 // GetBlock gets a block in the context of a request session
 func (s *Session) GetBlock(ctx context.Context, c *cid.Cid) (blocks.Block, error) {
-	return getBlock(ctx, c, s.bs, s.ses)
+	return getBlock(ctx, c, s.bs, s.ses) // hash security
 }
 
 // GetBlocks gets blocks in the context of a request session
 func (s *Session) GetBlocks(ctx context.Context, ks []*cid.Cid) <-chan blocks.Block {
-	return getBlocks(ctx, ks, s.bs, s.ses)
+	return getBlocks(ctx, ks, s.bs, s.ses) // hash security
 }
+
+var _ BlockGetter = (*Session)(nil)

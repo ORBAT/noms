@@ -5,12 +5,12 @@ import (
 	"sort"
 	"strings"
 
-	"gx/ipfs/QmSn9Td7xgxm9EV7iEjTckpUWmWApggzPxu7eFGWkkpwin/go-block-format"
+	"gx/ipfs/Qmej7nf81hi2x2tvjRBF3mcp74sQyuDH4VMYDGd1YtXjb2/go-block-format"
 
 	pb "github.com/ipfs/go-ipfs/merkledag/pb"
 
-	cid "gx/ipfs/QmNp85zy9RLrQ5oQD4hPyS39ezrrXpcaa7R4Y9kxdWQLLQ/go-cid"
-	node "gx/ipfs/QmPN7cwmpcc4DWXb4KTB9dNAJgjuPY69h3npsMfhRrQL9c/go-ipld-format"
+	cid "gx/ipfs/QmcZfnkapfECQGcLZaf9B79NRg7cRa9EnZh4LSbkCzwNvY/go-cid"
+	ipld "gx/ipfs/Qme5bWv7wtjUNGsK2BNGVUFPKiuxWrsqrtvYwCLRw8YFES/go-ipld-format"
 )
 
 // for now, we use a PBNode intermediate thing.
@@ -25,9 +25,9 @@ func (n *ProtoNode) unmarshal(encoded []byte) error {
 	}
 
 	pbnl := pbn.GetLinks()
-	n.links = make([]*node.Link, len(pbnl))
+	n.links = make([]*ipld.Link, len(pbnl))
 	for i, l := range pbnl {
-		n.links[i] = &node.Link{Name: l.GetName(), Size: l.GetTsize()}
+		n.links[i] = &ipld.Link{Name: l.GetName(), Size: l.GetTsize()}
 		c, err := cid.Cast(l.GetHash())
 		if err != nil {
 			return fmt.Errorf("Link hash #%d is not valid multihash. %v", i, err)
@@ -102,7 +102,7 @@ func (n *ProtoNode) EncodeProtobuf(force bool) ([]byte, error) {
 	return n.encoded, nil
 }
 
-// Decoded decodes raw data and returns a new Node instance.
+// DecodeProtobuf decodes raw data and returns a new Node instance.
 func DecodeProtobuf(encoded []byte) (*ProtoNode, error) {
 	n := new(ProtoNode)
 	err := n.unmarshal(encoded)
@@ -114,7 +114,7 @@ func DecodeProtobuf(encoded []byte) (*ProtoNode, error) {
 
 // DecodeProtobufBlock is a block decoder for protobuf IPLD nodes conforming to
 // node.DecodeBlockFunc
-func DecodeProtobufBlock(b blocks.Block) (node.Node, error) {
+func DecodeProtobufBlock(b blocks.Block) (ipld.Node, error) {
 	c := b.Cid()
 	if c.Type() != cid.DagProtobuf {
 		return nil, fmt.Errorf("this function can only decode protobuf nodes")
@@ -134,4 +134,4 @@ func DecodeProtobufBlock(b blocks.Block) (node.Node, error) {
 }
 
 // Type assertion
-var _ node.DecodeBlockFunc = DecodeProtobufBlock
+var _ ipld.DecodeBlockFunc = DecodeProtobufBlock

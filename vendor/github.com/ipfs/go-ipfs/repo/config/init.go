@@ -5,8 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"time"
 
-	peer "gx/ipfs/QmXYjuNuxVzXKJCfWasQk1RqkhVLDM9jtUKhqc2WPQmFSB/go-libp2p-peer"
+	peer "gx/ipfs/QmZoWKhxUmZ2seW4BzX6fJkNR8hh9PsGModr7q171yq2SS/go-libp2p-peer"
 	ci "gx/ipfs/QmaPbCnUMBohSGo3KnxEa2bHqyJVVeEEcwtqJAYxerieBo/go-libp2p-crypto"
 )
 
@@ -24,20 +25,15 @@ func Init(out io.Writer, nBitsForKeypair int) (*Config, error) {
 	datastore := DefaultDatastoreConfig()
 
 	conf := &Config{
+		API: API{
+			HTTPHeaders: map[string][]string{
+				"Server": {"go-ipfs/" + CurrentVersionNumber},
+			},
+		},
 
 		// setup the node's default addresses.
 		// NOTE: two swarm listen addrs, one tcp, one utp.
-		Addresses: Addresses{
-			Swarm: []string{
-				"/ip4/0.0.0.0/tcp/4001",
-				// "/ip4/0.0.0.0/udp/4002/utp", // disabled for now.
-				"/ip6/::/tcp/4001",
-			},
-			Announce:   []string{},
-			NoAnnounce: []string{},
-			API:        "/ip4/127.0.0.1/tcp/5001",
-			Gateway:    "/ip4/127.0.0.1/tcp/8080",
-		},
+		Addresses: addressesConfig(),
 
 		Datastore: datastore,
 		Bootstrap: BootstrapPeerStrings(bootstrapPeers),
@@ -71,9 +67,43 @@ func Init(out io.Writer, nBitsForKeypair int) (*Config, error) {
 			Interval: "12h",
 			Strategy: "all",
 		},
+		Swarm: SwarmConfig{
+			ConnMgr: ConnMgr{
+				LowWater:    DefaultConnMgrLowWater,
+				HighWater:   DefaultConnMgrHighWater,
+				GracePeriod: DefaultConnMgrGracePeriod.String(),
+				Type:        "basic",
+			},
+		},
 	}
 
 	return conf, nil
+}
+
+// DefaultConnMgrHighWater is the default value for the connection managers
+// 'high water' mark
+const DefaultConnMgrHighWater = 900
+
+// DefaultConnMgrLowWater is the default value for the connection managers 'low
+// water' mark
+const DefaultConnMgrLowWater = 600
+
+// DefaultConnMgrGracePeriod is the default value for the connection managers
+// grace period
+const DefaultConnMgrGracePeriod = time.Second * 20
+
+func addressesConfig() Addresses {
+	return Addresses{
+		Swarm: []string{
+			"/ip4/0.0.0.0/tcp/4001",
+			// "/ip4/0.0.0.0/udp/4002/utp", // disabled for now.
+			"/ip6/::/tcp/4001",
+		},
+		Announce:   []string{},
+		NoAnnounce: []string{},
+		API:        "/ip4/127.0.0.1/tcp/5001",
+		Gateway:    "/ip4/127.0.0.1/tcp/8080",
+	}
 }
 
 // DefaultDatastoreConfig is an internal function exported to aid in testing.

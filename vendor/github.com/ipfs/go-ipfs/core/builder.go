@@ -9,25 +9,26 @@ import (
 	"syscall"
 	"time"
 
-	bstore "github.com/ipfs/go-ipfs/blocks/blockstore"
 	bserv "github.com/ipfs/go-ipfs/blockservice"
 	offline "github.com/ipfs/go-ipfs/exchange/offline"
 	filestore "github.com/ipfs/go-ipfs/filestore"
 	dag "github.com/ipfs/go-ipfs/merkledag"
-	path "github.com/ipfs/go-ipfs/path"
+	resolver "github.com/ipfs/go-ipfs/path/resolver"
 	pin "github.com/ipfs/go-ipfs/pin"
 	repo "github.com/ipfs/go-ipfs/repo"
 	cfg "github.com/ipfs/go-ipfs/repo/config"
+	"github.com/ipfs/go-ipfs/thirdparty/verifbs"
 	uio "github.com/ipfs/go-ipfs/unixfs/io"
 
-	retry "gx/ipfs/QmPP91WFAb8LCs8EMzGvDPPvg1kacbqRkoxgTTnUsZckGe/retry-datastore"
-	pstore "gx/ipfs/QmPgDWmTmuzvP7QE5zwo1TmjbJme9pmZHNujB2453jkCTr/go-libp2p-peerstore"
+	ds "gx/ipfs/QmPpegoMqhAEqjncrzArm7KVWAkCm78rqL2DPuNjhPrshg/go-datastore"
+	dsync "gx/ipfs/QmPpegoMqhAEqjncrzArm7KVWAkCm78rqL2DPuNjhPrshg/go-datastore/sync"
 	metrics "gx/ipfs/QmRg1gKTHzc3CZXSKzem8aR4E3TubFhbgXwfVuWnSK5CC5/go-metrics-interface"
 	goprocessctx "gx/ipfs/QmSF8fPo3jgVBAy8fpdjjYqgG87dkJgUprRBHRd2tmfgpP/goprocess/context"
-	ds "gx/ipfs/QmVSase1JP7cq9QkPT46oNwdp9pT6kBkG3oqS14y3QcZjG/go-datastore"
-	dsync "gx/ipfs/QmVSase1JP7cq9QkPT46oNwdp9pT6kBkG3oqS14y3QcZjG/go-datastore/sync"
-	peer "gx/ipfs/QmXYjuNuxVzXKJCfWasQk1RqkhVLDM9jtUKhqc2WPQmFSB/go-libp2p-peer"
+	bstore "gx/ipfs/QmTVDM4LCSUMFNQzbDLL9zQwp8usE6QHymFdh3h8vL9v6b/go-ipfs-blockstore"
+	pstore "gx/ipfs/QmXauCuJzmzapetmC6W4TuDJLL1yFFrVzSHoWv8YdbmnxH/go-libp2p-peerstore"
+	peer "gx/ipfs/QmZoWKhxUmZ2seW4BzX6fJkNR8hh9PsGModr7q171yq2SS/go-libp2p-peer"
 	ci "gx/ipfs/QmaPbCnUMBohSGo3KnxEa2bHqyJVVeEEcwtqJAYxerieBo/go-libp2p-crypto"
+	retry "gx/ipfs/Qmc74pRHvndTDAB5nXztWAV7vs5j1obvCb9ejfQzXp9USX/retry-datastore"
 )
 
 type BuildCfg struct {
@@ -37,9 +38,9 @@ type BuildCfg struct {
 	// ExtraOpts is a map of extra options used to configure the ipfs nodes creation
 	ExtraOpts map[string]bool
 
-	// If permament then node should run more expensive processes
+	// If permanent then node should run more expensive processes
 	// that will improve performance in long run
-	Permament bool
+	Permanent bool
 
 	// If NilRepo is set, a repo backed by a nil datastore will be constructed
 	NilRepo bool
@@ -115,6 +116,7 @@ func defaultRepo(dstore repo.Datastore) (repo.Repo, error) {
 	}, nil
 }
 
+// NewNode constructs and returns an IpfsNode using the given cfg.
 func NewNode(ctx context.Context, cfg *BuildCfg) (*IpfsNode, error) {
 	if cfg == nil {
 		cfg = new(BuildCfg)
@@ -169,7 +171,9 @@ func setupNode(ctx context.Context, n *IpfsNode, cfg *BuildCfg) error {
 		TempErrFunc: isTooManyFDError,
 	}
 
+	// hash security
 	bs := bstore.NewBlockstore(rds)
+	bs = &verifbs.VerifBS{bs}
 
 	opts := bstore.DefaultCacheOpts()
 	conf, err := n.Repo.Config()
@@ -181,7 +185,7 @@ func setupNode(ctx context.Context, n *IpfsNode, cfg *BuildCfg) error {
 	uio.UseHAMTSharding = conf.Experimental.ShardingEnabled
 
 	opts.HasBloomFilterSize = conf.Datastore.BloomFilterSize
-	if !cfg.Permament {
+	if !cfg.Permanent {
 		opts.HasBloomFilterSize = 0
 	}
 
@@ -195,8 +199,10 @@ func setupNode(ctx context.Context, n *IpfsNode, cfg *BuildCfg) error {
 	n.Blockstore = bstore.NewGCBlockstore(cbs, n.GCLocker)
 
 	if conf.Experimental.FilestoreEnabled {
+		// hash security
 		n.Filestore = filestore.NewFilestore(bs, n.Repo.FileManager())
 		n.Blockstore = bstore.NewGCBlockstore(n.Filestore, n.GCLocker)
+		n.Blockstore = &verifbs.VerifBSGC{n.Blockstore}
 	}
 
 	rcfg, err := n.Repo.Config()
@@ -210,7 +216,7 @@ func setupNode(ctx context.Context, n *IpfsNode, cfg *BuildCfg) error {
 
 	if cfg.Online {
 		do := setupDiscoveryOption(rcfg.Discovery)
-		if err := n.startOnlineServices(ctx, cfg.Routing, cfg.Host, do, cfg.getOpt("pubsub"), cfg.getOpt("mplex")); err != nil {
+		if err := n.startOnlineServices(ctx, cfg.Routing, cfg.Host, do, cfg.getOpt("pubsub"), cfg.getOpt("ipnsps"), cfg.getOpt("mplex")); err != nil {
 			return err
 		}
 	} else {
@@ -229,7 +235,7 @@ func setupNode(ctx context.Context, n *IpfsNode, cfg *BuildCfg) error {
 		// this is kinda sketchy and could cause data loss
 		n.Pinning = pin.NewPinner(n.Repo.Datastore(), n.DAG, internalDag)
 	}
-	n.Resolver = path.NewBasicResolver(n.DAG)
+	n.Resolver = resolver.NewBasicResolver(n.DAG)
 
 	if cfg.Online {
 		if err := n.startLateOnlineServices(ctx); err != nil {
