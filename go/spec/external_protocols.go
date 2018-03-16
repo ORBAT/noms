@@ -15,7 +15,7 @@ type ProtocolImpl interface {
 }
 
 // RegisterExternalProtocol registers an external protocol implementation with the given name and ProtocolImpl.
-// Trying to register a protocol with a name that is already taken will return an error. This includes
+// Trying to register a protocol with a name that is already taken will return an error.
 // Thread-safe.
 func RegisterExternalProtocol(name string, p ProtocolImpl) error {
 	return externalProtocols.set(name, p)
@@ -53,6 +53,7 @@ func (ph *protoHolder) get(name string) (p ProtocolImpl, ok bool) {
 }
 
 func (ph *protoHolder) set(name string, pi ProtocolImpl) error {
+	// TODO: check that name isn't one of the hard-coded ones
 	ph.init()
 	ph.Lock()
 	defer ph.Unlock()
