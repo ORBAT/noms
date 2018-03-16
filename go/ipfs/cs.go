@@ -2,10 +2,8 @@ package ipfs
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"io/ioutil"
-	"math"
 	"os"
 	"path"
 	"reflect"
@@ -19,15 +17,14 @@ import (
 
 	"github.com/attic-labs/noms/go/chunks"
 	"github.com/attic-labs/noms/go/d"
-	"github.com/attic-labs/noms/go/datas"
 	"github.com/attic-labs/noms/go/hash"
-	"github.com/attic-labs/noms/go/spec"
 	"github.com/attic-labs/noms/samples/go/decent/dbg"
 	"github.com/ipfs/go-ipfs-blockstore"
 	"github.com/ipfs/go-ipfs/core"
 	"github.com/ipfs/go-ipfs/repo"
-	"github.com/ipfs/go-ipfs/repo/config"
+	ipfsCfg "github.com/ipfs/go-ipfs/repo/config"
 	"github.com/ipfs/go-ipfs/repo/fsrepo"
+	"github.com/pkg/errors"
 )
 
 // NewChunkStore creates a new ChunkStore backed by IPFS.
@@ -36,51 +33,61 @@ import (
 // stored in an IPFS BlockStore.
 //
 // IPFS database specs have the form:
-//   ipfs://<path-to-ipfs-dir>
-// where 'ipfs' indicates the noms protocol and the path indicates the path to
-// the directory where the ipfs repo resides. The chunkstore creates two files
-// in the ipfs directory called 'noms' and 'noms-local' which stores the root
-// of the noms database. This should ideally be done with IPNS, but that is
-// currently too slow to be practical.
+//   ipfs://<path-to-ipfs-dir> for networked ChunkStores
+//   ipfs-local://<path-to-ipfs-dir> for local ChunkStores
+// where 'ipfs' or 'ipfs-local' indicates the noms protocol and the path indicates the path to the directory where the
+// ipfs repo resides. The chunkstore creates two files in the ipfs directory called 'noms' and 'noms-local' which stores
+// the root of the noms database. This should ideally be done with IPNS, but that is currently too slow to be practical.
 //
-// This function creates an IPFS repo at the appropriate path if one doesn't
-// already exist.
+// This function creates an IPFS repo at the appropriate path if one doesn't already exist.
 //
-// If local is true, only the local IPFS blockstore is used for both reads and
-// write. If local is false, then reads will fall through to the network and
-// blocks stored will be exposed to the entire IPFS network.
-func NewChunkStore(p string, local bool) *chunkStore {
-	node := OpenIPFSRepo(p, -1)
-	return ChunkStoreFromIPFSNode(p, local, node, math.MaxInt32)
-}
-
-// Creates a new chunchStore using a pre-existing IpfsNode. This is currently
-// used to create a second 'local' chunkStore using the same IpfsNode as another
-// non-local chunkStore.
-func ChunkStoreFromIPFSNode(p string, local bool, node *core.IpfsNode, maxConcurrentRequests int) *chunkStore {
-	return &chunkStore{
-		node:      node,
-		name:      p,
-		local:     local,
-		rateLimit: make(chan struct{}, maxConcurrentRequests),
+// See Option documentation for more information on options.
+func NewChunkStore(dbPath string, opts ...Option) (chunks.ChunkStore, error) {
+	cfg, err := cfgFrom(opts...)
+	if err != nil {
+		return nil, err
 	}
+
+	return newChunkStore(dbPath, cfg)
 }
 
-// Opens a pre-existing ipfs repo for use as a noms store. This function will
-// create a new IPFS repos at this indictated path if one doesn't already exist.
-// Also if portIdx is a number between 0 and 1 inclusive, the config file will
-// be modified to change external facing port numbers to end in 'portIdx'.
-func OpenIPFSRepo(p string, portIdx int) *core.IpfsNode {
+func newChunkStore(dbPath string, c *config) (chunks.ChunkStore, error) {
+	node, err := OpenIPFSRepo(dbPath, c.portIdx)
+	if err != nil {
+		return nil, errors.Wrap(err, "error opening IPFS repo")
+	}
+
+	return &chunkStore{
+		node:        node,
+		name:        dbPath,
+		local:       c.local,
+		concLimiter: make(chan struct{}, c.maxConcurrent),
+	}, nil
+}
+
+// OpenIPFSRepo opens an IPFS repo for use as a noms store. Creates a new IPFS repos at this indicated path if one
+// doesn't already exist.
+func OpenIPFSRepo(p string, portIdx int) (*core.IpfsNode, error) {
 	r, err := fsrepo.Open(p)
+	dbg.Debug("opening IPFS repo with idx %d", portIdx)
 	if _, ok := err.(fsrepo.NoRepoError); ok {
-		var conf *config.Config
-		conf, err = config.Init(os.Stdout, 2048)
-		d.Chk.NoError(err)
+		var conf *ipfsCfg.Config
+		conf, err = ipfsCfg.Init(os.Stdout, 2048)
+		if err != nil {
+			return nil, errors.Wrap(err, "error initializing new IPFS config")
+		}
+
 		err = fsrepo.Init(p, conf)
-		d.Chk.NoError(err)
+		if err != nil {
+			return nil, errors.Wrap(err, "error initializing new IPFS repo")
+		}
+
 		r, err = fsrepo.Open(p)
 	}
-	d.CheckError(err)
+
+	if err != nil {
+		return nil, errors.Wrap(err, "error opening IPFS repo")
+	}
 
 	resetRepoConfigPorts(r, portIdx)
 
@@ -93,47 +100,63 @@ func OpenIPFSRepo(p string, portIdx int) *core.IpfsNode {
 	}
 
 	node, err := core.NewNode(context.Background(), cfg)
-	d.CheckError(err)
-	return node
+
+	if err != nil {
+		return nil, errors.Wrap(err, "error creating IPFS node")
+	}
+
+	repoCfg, err := node.Repo.Config()
+
+	if err != nil {
+		return nil, errors.Wrap(err, "error getting IPFS repo config")
+	}
+
+	dbg.Debug("Addresses are %+v", repoCfg.Addresses)
+
+	return node, nil
 }
 
 type chunkStore struct {
-	root      *hash.Hash
-	node      *core.IpfsNode
-	name      string
-	rateLimit chan struct{}
-	local     bool
+	root        *hash.Hash
+	node        *core.IpfsNode
+	name        string
+	concLimiter chan struct{}
+	local       bool
 }
 
-func (cs *chunkStore) limitRateF() func() {
-	cs.rateLimit <- struct{}{}
+func (cs *chunkStore) IPFSNode() *core.IpfsNode {
+	return cs.node
+}
+
+func (cs *chunkStore) limitConcurrency() func() {
+	cs.concLimiter <- struct{}{}
 	return func() {
-		<-cs.rateLimit
+		<-cs.concLimiter
 	}
+}
+
+func (cs *chunkStore) getBlock(chunkId *cid.Cid, timeout time.Duration) (b blocks.Block, err error) {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
+	if cs.local {
+		b, err = cs.node.Blockstore.Get(chunkId)
+		if err == blockstore.ErrNotFound {
+			return
+		}
+	} else {
+		b, err = cs.node.Blocks.GetBlock(ctx, chunkId)
+	}
+	return
 }
 
 func (cs *chunkStore) get(h hash.Hash, timeout time.Duration) chunks.Chunk {
 	dbg.Debug("starting ipfsCS Get, h: %s, cid: %s, cs.local: %t", h, NomsHashToCID(h), cs.local)
 	var b blocks.Block
-	defer cs.limitRateF()()
-
-	getBlock := func(chunkId *cid.Cid) (b blocks.Block, err error) {
-		ctx, cancel := context.WithTimeout(context.Background(), timeout)
-		defer cancel()
-
-		if cs.local {
-			b, err = cs.node.Blockstore.Get(chunkId)
-			if err == blockstore.ErrNotFound {
-				return
-			}
-		} else {
-			b, err = cs.node.Blocks.GetBlock(ctx, chunkId)
-		}
-		return
-	}
+	defer cs.limitConcurrency()()
 
 	chunkId := NomsHashToCID(h)
-	b, err := getBlock(chunkId)
+	b, err := cs.getBlock(chunkId, timeout)
 	if err == nil {
 		dbg.Debug("finished ipfsCS Get, h: %s, cid: %s, cs.local: %t, len(b.RawData): %d", h, NomsHashToCID(h), cs.local, len(b.RawData()))
 		return chunks.NewChunkWithHash(h, b.RawData())
@@ -150,7 +173,7 @@ func (cs *chunkStore) GetMany(hashes hash.HashSet, foundChunks chan *chunks.Chun
 	defer dbg.BoxF("ipfs chunkstore GetMany, cs.local: %t", cs.local)()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	defer cs.limitRateF()()
+	defer cs.limitConcurrency()()
 
 	cids := make([]*cid.Cid, 0, len(hashes))
 	for h := range hashes {
@@ -176,7 +199,7 @@ func (cs *chunkStore) GetMany(hashes hash.HashSet, foundChunks chan *chunks.Chun
 func (cs *chunkStore) Has(h hash.Hash) bool {
 	id := NomsHashToCID(h)
 	if cs.local {
-		defer cs.limitRateF()()
+		defer cs.limitConcurrency()()
 		ok, err := cs.node.Blockstore.Has(id)
 		d.PanicIfError(err)
 		return ok
@@ -218,7 +241,7 @@ func (cs *chunkStore) HasMany(hashes hash.HashSet) hash.HashSet {
 }
 
 func (cs *chunkStore) Put(c chunks.Chunk) {
-	defer cs.limitRateF()()
+	defer cs.limitConcurrency()()
 
 	cid := NomsHashToCID(c.Hash())
 	b, err := blocks.NewBlockWithCid(c.Data(), cid)
@@ -317,47 +340,102 @@ func (cs *chunkStore) Close() error {
 	return cs.node.Close()
 }
 
-func resetRepoConfigPorts(r repo.Repo, nodeIdx int) {
-	if nodeIdx < 0 || nodeIdx > 9 {
-		return
-	}
-
-	apiPort := fmt.Sprintf("500%d", nodeIdx)
-	gatewayPort := fmt.Sprintf("808%d", nodeIdx)
-	swarmPort := fmt.Sprintf("400%d", nodeIdx)
+// resetRepoConfigPorts adds portIdx to each default port number. The index is added instead of replaced to keep
+// idx 0 and 1 from conflicting.
+func resetRepoConfigPorts(r repo.Repo, portIdx int) error {
+	apiPort := fmt.Sprintf("500%d", portIdx+1)
+	gatewayPort := fmt.Sprintf("808%d", portIdx)
+	swarmPort := fmt.Sprintf("400%d", portIdx+1)
 
 	rc, err := r.Config()
-	d.CheckError(err)
+	if err != nil {
+		return errors.Wrap(err, "error getting IPFS repo config")
+	}
 
 	rc.Addresses.API = strings.Replace(rc.Addresses.API, "5001", apiPort, -1)
 	rc.Addresses.Gateway = strings.Replace(rc.Addresses.Gateway, "8080", gatewayPort, -1)
 	for i, addr := range rc.Addresses.Swarm {
 		rc.Addresses.Swarm[i] = strings.Replace(addr, "4001", swarmPort, -1)
 	}
-	err = r.SetConfig(rc)
-	d.CheckError(err)
+
+	return errors.Wrap(r.SetConfig(rc), "error setting IPFS repo config")
 }
 
-// ipfsProtocol implements spec.ProtocolImpl for ipfs and ipfs-local. If the bool is true, then the ChunkStore will be
-// local. See NewChunkStore
-type ipfsProtocol = bool
+// An Option configures the IPFS ChunkStore
+type Option interface {
+	apply(*config) error
+}
 
-// NewChunkStore returns a new
-func (i ipfsProtocol) NewChunkStore(sp spec.Spec) (chunks.ChunkStore, error) {
-	if sp.DatabaseName == "" {
-		return nil, errors.New("no database in spec")
+type optFunc func(*config) error
+
+func (of optFunc) apply(c *config) error {
+	return of(c)
+}
+
+// SetLocal makes the ChunkStore only use the local IPFS blockstore for both reads and writes.
+func SetLocal() Option {
+	return optFunc(func(c *config) error {
+		c.local = true
+		return nil
+	})
+}
+
+// SetNetworked makes reads fall through to the network and expose stored blocks to the entire IPFS network.
+func SetNetworked() Option {
+	return optFunc(func(c *config) error {
+		c.local = false
+		return nil
+	})
+}
+
+// SetMaxConcurrent sets the maximum number of concurrent requests used when creating IPFS ChunkStores from a Spec. The
+// default is 1. Negative values of n will return an error.
+func SetMaxConcurrent(max int) Option {
+	return optFunc(func(config *config) error {
+		if max < 0 {
+			return errors.New("SetMaxConcurrent must be called with max > 0")
+		}
+		config.maxConcurrent = max
+		return nil
+	})
+}
+
+// SetPortIdx sets the node index to use when creating IPFS ChunkStores from a Spec. If portIdx is a number between 1
+// and 8 inclusive, the config file will be modified to add 'portIdx' to each external port's number. The defaults are
+// API: 5001, gateway: 8080, swarm: 4001, so a portIdx of 1 would give you 5002, 8081, and 4002.
+//
+// The default is 0, which stands for IPFS default ports. idx must be between 0 and 8 inclusive; other values will
+// result in an error.
+func SetPortIdx(portIdx int) Option {
+	return optFunc(func(protocol *config) error {
+		if portIdx < 0 || portIdx > 8 {
+			return errors.New("SetPortIdx must be called with portIdx >= 0 and <= 8")
+		}
+		protocol.portIdx = portIdx
+		return nil
+	})
+}
+
+// TODO: figure out less grody way of passing options to the external protocol. Maybe even extend Spec so that it supports
+// URI query strings, since it's already URI-like?
+
+type config struct {
+	portIdx       int
+	maxConcurrent int
+	local         bool
+}
+
+// cfgFrom turns opts into a valid config
+func cfgFrom(opts ...Option) (*config, error) {
+	c := &config{}
+	for _, opt := range opts {
+		if err := opt.apply(c); err != nil {
+			return nil, errors.Wrap(err, "error in configuration")
+		}
 	}
-	return NewChunkStore(sp.DatabaseName, i), nil
-}
 
-func (i ipfsProtocol) NewDatabase(sp spec.Spec) (datas.Database, error) {
-	if sp.DatabaseName == "" {
-		return nil, errors.New("no database in spec")
+	if c.maxConcurrent == 0 {
+		c.maxConcurrent = 1
 	}
-	return datas.NewDatabase(NewChunkStore(sp.DatabaseName, i)), nil
-}
-
-func init() {
-	spec.ExternalProtocols["ipfs"] = ipfsProtocol(false)
-	spec.ExternalProtocols["ipfs-local"] = ipfsProtocol(true)
+	return c, nil
 }
