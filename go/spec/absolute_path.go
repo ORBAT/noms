@@ -65,6 +65,7 @@ func NewAbsolutePath(str string) (AbsolutePath, error) {
 
 		pathStr = tail[hash.StringLen:]
 	} else {
+		// TODO: this fails for datasets starting with numbers
 		idx, h, rem, err := types.ParsePathIndex(str)
 		if idx != nil && h.IsEmpty() && rem == "" && err == nil {
 			return AbsolutePath{
