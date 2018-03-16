@@ -14,6 +14,7 @@ import (
 
 	"github.com/attic-labs/noms/cmd/noms/splore"
 	"github.com/attic-labs/noms/cmd/util"
+	"github.com/attic-labs/noms/go/ipfs"
 	"github.com/attic-labs/noms/go/util/exit"
 	"github.com/attic-labs/noms/go/util/profile"
 	"github.com/attic-labs/noms/go/util/verbose"
@@ -67,6 +68,9 @@ func main() {
 	// allow short (-h) help
 	kingpin.CommandLine.HelpFlag.Short('h')
 	noms := kingpin.New("noms", usageString())
+
+	// register IPFS protocols
+	ipfs.RegisterProtocols()
 
 	// global flags
 	cpuProfileVal := noms.Flag("cpuprofile", "write cpu profile to file").String()
