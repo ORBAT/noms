@@ -2,7 +2,7 @@
   "author": "ORBAT",
   "bugs": {},
   "gx": {
-    "dvcsimport": "github.com/ORBAT/noms"
+    "dvcsimport": "github.com/attic-labs/noms"
   },
   "gxDependencies": [
     {
