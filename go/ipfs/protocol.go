@@ -44,6 +44,8 @@ func NewProtocol(opts ...Option) (*Protocol, error) {
 
 // NewChunkStore returns a new ChunkStore backed by IPFS using the options passed in via NewProtocol
 // The returned ChunkStore implements HasIPFSNode.
+//
+// See the package-level NewChunkStore and Options for more information.
 func (p Protocol) NewChunkStore(sp spec.Spec) (chunks.ChunkStore, error) {
 	if sp.DatabaseName == "" {
 		return nil, errors.New("no database in spec")
@@ -52,10 +54,9 @@ func (p Protocol) NewChunkStore(sp spec.Spec) (chunks.ChunkStore, error) {
 	return newChunkStore(sp.DatabaseName, p.config)
 }
 
-// NewDatabase returns a new Database backed by an IPFS ChunkStore. If i is true, the ChunkStore is local.
-// The returned database implements HasIPFSNode.
+// NewDatabase returns a new Database backed by an IPFS ChunkStore. The returned database implements HasIPFSNode.
 //
-// See the package-level NewChunkStore for more information.
+// See the package-level NewChunkStore and Options for more information.
 func (p Protocol) NewDatabase(sp spec.Spec) (datas.Database, error) {
 	if sp.DatabaseName == "" {
 		return nil, errors.New("no database in spec")
