@@ -73,7 +73,7 @@ func main() {
 
 func runClient(ipfsSpec string, cInfo lib.ClientInfo) {
 	dbg.SetLogger(lib.NewLogger(cInfo.Username))
-
+	d.CheckError(ipfs.RegisterProtocols(ipfs.SetPortIdx(cInfo.Idx)))
 	sp, err := spec.ForDataset(ipfsSpec)
 	d.CheckErrorNoUsage(err)
 
@@ -83,7 +83,7 @@ func runClient(ipfsSpec string, cInfo lib.ClientInfo) {
 	}
 
 	// Create/Open a new IPFS-backed database
-	node, db := initIpfsDb(sp, cInfo.Idx)
+	node, db := initIpfsDb(sp)
 
 	dbg.Debug("my ID is %s", node.Identity.Pretty())
 
@@ -111,7 +111,7 @@ func runClient(ipfsSpec string, cInfo lib.ClientInfo) {
 
 func runDaemon(ipfsSpec string, cInfo lib.ClientInfo) {
 	dbg.SetLogger(log.New(os.Stdout, "", 0))
-
+	d.CheckError(ipfs.RegisterProtocols(ipfs.SetPortIdx(cInfo.Idx)))
 	sp, err := spec.ForDataset(ipfsSpec)
 	d.CheckErrorNoUsage(err)
 
@@ -121,7 +121,7 @@ func runDaemon(ipfsSpec string, cInfo lib.ClientInfo) {
 	}
 
 	// Create/Open a new IPFS-backed database
-	node, db := initIpfsDb(sp, cInfo.Idx)
+	node, db := initIpfsDb(sp)
 
 	// Get the head of specified dataset.
 	ds := db.GetDataset(sp.Path.Dataset)
@@ -177,8 +177,7 @@ func expandRLimit() {
 	d.Chk.NoError(err)
 }
 
-func initIpfsDb(sp spec.Spec, portIdx int) (*core.IpfsNode, datas.Database) {
-	d.CheckError(ipfs.RegisterProtocols(ipfs.SetPortIdx(portIdx)))
+func initIpfsDb(sp spec.Spec) (*core.IpfsNode, datas.Database) {
 	db := sp.GetDatabase()
 	node := db.(ipfs.HasIPFSNode).IPFSNode()
 	return node, db
