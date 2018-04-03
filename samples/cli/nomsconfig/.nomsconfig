@@ -13,3 +13,7 @@ url = "ldb:/tmp/noms/shared"
 # DB alias named `http` that refers to the local http db
 [db.http]
 url = "http://localhost:8000"
+
+[protocol.ipfs]
+local = false
+concurrency = 1

@@ -30,8 +30,7 @@ var (
 	rtestRoot = os.TempDir()
 
 	rtestConfig = &Config{
-		"",
-		map[string]DbConfig{
+		Db: map[string]DbConfig{
 			DefaultDbAlias: {localSpec},
 			remoteAlias:    {remoteSpec},
 		},

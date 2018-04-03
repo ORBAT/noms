@@ -27,34 +27,44 @@ var (
 	ctestRoot = os.TempDir()
 
 	ldbConfig = &Config{
-		"",
-		map[string]DbConfig{
+		Db: map[string]DbConfig{
 			DefaultDbAlias: {nbsSpec},
 			remoteAlias:    {httpSpec},
 		},
 	}
 
 	httpConfig = &Config{
-		"",
-		map[string]DbConfig{
+		Db: map[string]DbConfig{
 			DefaultDbAlias: {httpSpec},
 			remoteAlias:    {nbsSpec},
 		},
 	}
 
 	memConfig = &Config{
-		"",
-		map[string]DbConfig{
+		Db: map[string]DbConfig{
 			DefaultDbAlias: {memSpec},
 			remoteAlias:    {httpSpec},
 		},
 	}
 
 	ldbAbsConfig = &Config{
-		"",
-		map[string]DbConfig{
+		Db: map[string]DbConfig{
 			DefaultDbAlias: {nbsAbsSpec},
 			remoteAlias:    {httpSpec},
+		},
+	}
+
+	httpWithProtoConfig = &Config{
+		Db: map[string]DbConfig{
+			DefaultDbAlias: {httpSpec},
+			remoteAlias:    {nbsSpec},
+		},
+		Protocol: map[string]ProtocolCfg{
+			"some_proto": {
+				"int_key":    1,
+				"string_key": "str",
+				"bool_key":   true,
+			},
 		},
 	}
 )
@@ -198,4 +208,22 @@ func TestCwd(t *testing.T) {
 	assert.NoError(err)
 
 	assert.Equal(cwd, abs)
+}
+
+
+func TestConfig_String(t *testing.T) {
+	expected := `[db]
+  [db.default]
+    url = "http://test.com:8080/foo"
+  [db.origin]
+    url = "nbs:./local"
+
+[protocol]
+  [protocol.some_proto]
+    bool_key = true
+    int_key = 1
+    string_key = "str"
+`
+	actual := httpWithProtoConfig.String()
+	assert.Equal(t, expected, actual)
 }

@@ -16,14 +16,27 @@ import (
 	"github.com/attic-labs/noms/go/spec"
 )
 
+// Config holds configuration loaded from TOML files
 type Config struct {
-	File string
-	Db   map[string]DbConfig
+	// File is the name of the configuration file
+	File string `toml:"-"`
+	// Db holds URLs for database aliases
+	Db   map[string]DbConfig `toml:"db,omitempty"`
+	// Protocol holds protocol-specific ("http", "nbs" and so on) configuration options
+	Protocol map[string]ProtocolCfg `toml:"protocol,omitempty"`
 }
 
+// DbConfig holds an URL for a specific database alias
 type DbConfig struct {
-	Url string
+	Url string `toml:"url,omitempty"`
 }
+
+// TODO(ORBAT): avoid having ProtocolCfg use interface{}: this throws compile time type safety out the window.
+// Should the decoding of a ProtocolCfg be specific to the protocol, so that each protocol that needs it has its own
+// type, and unmarshaling is done similarly to JSON (e.g. http://eagain.net/articles/go-dynamic-json/)
+
+// ProtocolCfg is used to hold protocol-specific ("http", "nbs" and so on) configuration
+type ProtocolCfg map[string]interface{}
 
 const (
 	NomsConfigFile = ".nomsconfig"
@@ -133,9 +146,10 @@ func (c *Config) String() string {
 
 func (c *Config) writeableString() string {
 	var buffer bytes.Buffer
-	for k, r := range c.Db {
-		buffer.WriteString(fmt.Sprintf("[db.%s]\n", k))
-		buffer.WriteString(fmt.Sprintf("\t"+`url = "%s"`+"\n", r.Url))
+	e := toml.NewEncoder(&buffer)
+	if err := e.Encode(c); err != nil {
+		panic(err)
 	}
+
 	return buffer.String()
 }
